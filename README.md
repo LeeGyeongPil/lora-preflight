@@ -76,6 +76,7 @@ lora-preflight ./demo/r128_all --target vllm --max-lora-rank 128
 ```
 ![r128 어댑터가 vLLM 에서 FAIL 이었다가 --max-lora-rank 128 을 주면 PASS 가 되는 화면](docs/images/02-rank-fail-then-pass.png)
 *첫 실행은 FAIL 과 고칠 `vllm serve …` 명령을, 두 번째 실행은 그 값을 반영해 PASS 를 보여 줍니다.*
+*이 화면은 v0.1.0 에서 찍은 것이라 v0.1.1 에서 추가된 `common.truncated` 규칙만큼 통과 규칙 수가 1 적게 보입니다.*
 
 첫 실행의 핵심 줄은 다음과 같습니다.
 ```
@@ -126,14 +127,14 @@ for f in report.findings:
 lora-preflight hf:smangrul/tinyllama_lora_norobots \
   --base hf:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T --target vllm
 ```
-`hf:<소유자>/<레포>[@리비전]` 을 주면 HTTP `Range` 요청으로 safetensors 파일 앞부분(헤더)만 읽습니다. 수 GB 짜리 베이스도 헤더 수십 KB 만 받습니다. 허브 어댑터의 베이스는 자동으로 받지 않으므로 어휘 크기 같은 대조가 필요하면 `--base hf:…` 를 직접 줘야 합니다.
+`hf:<소유자>/<레포>[@리비전]` 을 주면 HTTP `Range` 요청으로 safetensors 파일 앞부분(헤더)만 읽습니다. 수 GB 짜리 베이스도 헤더 수십 KB 만 받습니다. 허브 어댑터의 베이스는 자동으로 받지 않으므로 어휘 크기 같은 대조가 필요하면 `--base hf:…` 를 직접 줘야 합니다. 잘림 검사(`common.truncated`)는 첫 `Range` 응답의 `Content-Range` 총 길이로 하며, 총 길이를 알 수 없으면 건너뜁니다(추가 요청 없음).
 
 위 명령을 2026-11-10 에 실제 허브에서 실행했을 때의 핵심 출력입니다(허브 내용은 바뀔 수 있습니다). 이 예시는 어휘 크기가 달라(어댑터 32005, 베이스 32000) vLLM 이 `FAIL` 로 나오고 종료 코드는 1 입니다.
 ```text
 verdicts
   vllm      FAIL
 
-findings (2 to look at, 11 rule(s) passed)
+findings (2 to look at, 12 rule(s) passed)
   [FAIL] vllm.embedding-vocab: embedding LoRA size(32005) must be consistent with the base model's vocabulary size(32000) (model.embed_tokens)
   [FAIL] vllm.shape: lm_head: B gives 32005 outputs, base has 32000
 ```
@@ -169,6 +170,8 @@ flowchart LR
 lora-preflight rules | head -24
 ```
 ![규칙 목록: 규칙 ID, 출처 URL, 기준 버전과 확인 날짜](docs/images/05-rules.png)
+
+(이 그림은 v0.1.0 기준이라 v0.1.1 에서 추가된 `common.truncated` 규칙이 빠져 있습니다. 최신 목록은 `lora-preflight rules` 로 확인하세요.)
 *각 규칙에 출처와 확인 날짜가 붙어 있어, 판정이 어디서 왔는지 따라갈 수 있습니다.*
 
 - **vLLM**: 최대 랭크가 `--max-lora-rank`(기본 16) 이하인지, DoRA·`bias`·`lora_bias`·특수 초기화(PiSSA 등)·`modules_to_save`(분류 헤드 제외)를 쓰지 않았는지, 임베딩 LoRA 어휘 크기가 베이스와 같은지.
@@ -197,6 +200,9 @@ lora-preflight rules | head -24
 | 베이스가 필요한 규칙이 `UNKNOWN` | `--base` 가 없고 config 의 베이스 경로가 로컬에 없음 | `--base ./base-model` 또는 `--base hf:<소유자>/<레포>` 추가 |
 | Ollama 가 늘 `WARN` | 확인한 버전에서 어댑터 가져오기가 막힘 | 안내된 병합 명령으로 병합 모델을 만들어 `FROM` 으로 사용 |
 | 허브 경로에서 `SourceError` | 레포·파일 이름 오류, 비공개 레포, 네트워크 | 이름을 확인하고 비공개면 `HF_TOKEN` 설정 |
+| `common.truncated` FAIL 과 종료 코드 1 | `adapter_model.safetensors` 가 복사·업로드 중 잘려 헤더가 요구하는 크기보다 작음 | 다시 저장(`save_pretrained`)하거나 다시 복사·다운로드 |
+| `error: ... The file is truncated` 와 종료 코드 2 (어댑터) | 어댑터 파일이 헤더 영역 안에서 잘려 크기를 계산할 수도 없음 | 위 `common.truncated` 와 같은 원인이니 다시 저장하거나 다시 복사·다운로드 |
+| `error: Base file is truncated` 와 종료 코드 2 | `--base` 의 safetensors(또는 샤드)가 잘림 | 베이스를 다시 받기 |
 | `--strict` 인데 종료 코드 1 | WARN 도 실패로 처리하기 때문 | Ollama 를 점검 대상에서 빼려면 `--target vllm,llamacpp` |
 
 ## 개발·기여
