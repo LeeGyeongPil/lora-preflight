@@ -11,7 +11,7 @@ Public API::
 Everything else in the package is internal and may change between releases.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .checker import check  # noqa: E402
 from .errors import AdapterFormatError, NotFoundError, PreflightError, SourceError  # noqa: E402
