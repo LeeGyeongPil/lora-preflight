@@ -13,6 +13,7 @@ can be inspected with two small HTTP Range requests.
 from __future__ import annotations
 
 import json
+import os
 import struct
 from dataclasses import dataclass, field
 from typing import Callable
@@ -47,6 +48,15 @@ class Header:
 
     tensors: dict[str, TensorInfo] = field(default_factory=dict)
     metadata: dict[str, str] = field(default_factory=dict)
+    # Bytes the header says the file must have: 8 + header length + largest data_offsets end.
+    required_size: int = 0
+    # Actual file size, or None when it is unknown (remote server gave no total length).
+    file_size: int | None = None
+
+    @property
+    def is_truncated(self) -> bool:
+        """True only when the real size is known and smaller than the header requires."""
+        return self.file_size is not None and self.file_size < self.required_size
 
 
 def parse_length(prefix: bytes, label: str) -> int:
@@ -65,7 +75,9 @@ def parse_length(prefix: bytes, label: str) -> int:
     return length
 
 
-def parse_header_json(body: bytes, length: int, label: str) -> Header:
+def parse_header_json(
+    body: bytes, length: int, label: str, file_size: int | None = None
+) -> Header:
     """Decode the JSON part of the header into a :class:`Header`."""
     if len(body) < length:
         raise AdapterFormatError(
@@ -78,7 +90,7 @@ def parse_header_json(body: bytes, length: int, label: str) -> Header:
         raise AdapterFormatError(f"{label}: header is not valid JSON ({exc}).") from exc
     if not isinstance(raw, dict):
         raise AdapterFormatError(f"{label}: header JSON must be an object.")
-    header = Header()
+    header = Header(required_size=8 + length, file_size=file_size)
     for name, entry in raw.items():
         if name == "__metadata__":
             if isinstance(entry, dict):
@@ -92,14 +104,22 @@ def parse_header_json(body: bytes, length: int, label: str) -> Header:
                 f"{label}: tensor {name!r} has no valid dtype/shape entry."
             ) from exc
         header.tensors[name] = TensorInfo(name, dtype, shape)
+        # data_offsets only feed the size check; a missing or odd entry is ignored here.
+        offsets = entry.get("data_offsets") if isinstance(entry, dict) else None
+        if (
+            isinstance(offsets, list)
+            and len(offsets) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in offsets)
+        ):
+            header.required_size = max(header.required_size, 8 + length + offsets[1])
     return header
 
 
-def read_header(read_at: ReadAt, label: str) -> Header:
+def read_header(read_at: ReadAt, label: str, file_size: int | None = None) -> Header:
     """Read a header through ``read_at`` (two reads: length, then JSON)."""
     length = parse_length(read_at(0, 8), label)
     body = read_at(8, length) if length else b""
-    return parse_header_json(body, length, label)
+    return parse_header_json(body, length, label, file_size)
 
 
 def read_header_file(path: str, label: str | None = None) -> Header:
@@ -111,4 +131,4 @@ def read_header_file(path: str, label: str | None = None) -> Header:
             handle.seek(offset)
             return handle.read(size)
 
-    return read_header(read_at, name)
+    return read_header(read_at, name, file_size=os.path.getsize(path))

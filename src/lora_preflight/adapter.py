@@ -62,6 +62,8 @@ class AdapterSummary:
     unpaired: list[str] = field(default_factory=list)  # modules with only A or only B
     rank_mismatch: list[str] = field(default_factory=list)  # modules whose A rank != B rank
     unmatched_targets: list[str] = field(default_factory=list)
+    # (required, actual) bytes when adapter_model.safetensors is shorter than its header requires.
+    truncated: tuple[int, int] | None = None
 
     # --- config accessors -------------------------------------------------
     @property
@@ -278,6 +280,8 @@ def load_adapter(source: Source) -> AdapterSummary:
     summary = _classify(header)
     summary.source = source.describe()
     summary.config = config
+    if header.is_truncated and header.file_size is not None:
+        summary.truncated = (header.required_size, header.file_size)
     for module, info in summary.modules.items():
         if info.rank:
             info.scale = scale_for(config, module, info.rank)

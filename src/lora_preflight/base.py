@@ -68,6 +68,11 @@ def load_base(source: Source) -> BaseSummary:
                 f"{source.describe()} has no {name}. The base must be safetensors "
                 f"({SINGLE_FILE} or {INDEX_FILE} with shards)."
             ) from exc
+        if header.is_truncated:
+            raise SourceError(
+                f"Base file is truncated: {source.describe()}/{name} has {header.file_size} bytes but "
+                f"its header requires {header.required_size}. Copy or download the base model again."
+            )
         for tensor_name, info in header.tensors.items():
             summary.shapes[tensor_name] = info.shape
     try:

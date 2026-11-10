@@ -112,7 +112,14 @@ class HubSource:
         return request
 
     def _fetch(self, name: str, start: int, size: int) -> bytes:
-        """Return ``size`` bytes of ``name`` starting at ``start``.
+        """Return ``size`` bytes of ``name`` starting at ``start``."""
+        return self._fetch_with_total(name, start, size)[0]
+
+    def _fetch_with_total(self, name: str, start: int, size: int) -> tuple[bytes, int | None]:
+        """Return the bytes plus the file's total length from ``Content-Range``.
+
+        The total is None when the server sends no usable ``Content-Range``
+        (a plain 200 answer, or ``bytes 0-7/*``).
 
         Servers that ignore Range answer 200 with the whole body; in that case
         we read only what we need from the stream and close it.
@@ -138,9 +145,9 @@ class HubSource:
         try:
             status = getattr(response, "status", 200)
             if status == 206:
-                return response.read(size)
+                return response.read(size), _total_from_content_range(response)
             data = response.read(end + 1)
-            return data[start : end + 1]
+            return data[start : end + 1], None
         finally:
             response.close()
 
@@ -157,9 +164,19 @@ class HubSource:
 
     def read_header(self, name: str) -> Header:
         label = f"{self.describe()}/{name}"
-        length = parse_length(self._fetch(name, 0, 8), label)
+        # The first ranged read doubles as the size probe; no extra request is made.
+        prefix, total = self._fetch_with_total(name, 0, 8)
+        length = parse_length(prefix, label)
         body = self._fetch(name, 8, length) if length else b""
-        return parse_header_json(body, length, label)
+        return parse_header_json(body, length, label, total)
+
+
+def _total_from_content_range(response: Any) -> int | None:
+    """Total length from ``Content-Range: bytes 0-7/15368``; None if absent or ``*``."""
+    headers = response.headers if hasattr(response, "headers") else None
+    value = headers.get("Content-Range") if headers is not None else None
+    match = re.search(r"/(\d+)\s*$", value) if isinstance(value, str) else None
+    return int(match.group(1)) if match else None
 
 
 def parse_location(spec: str | Path, opener: Any = None) -> Source:

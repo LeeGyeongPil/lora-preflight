@@ -57,6 +57,8 @@ class Rule:
 RULES: tuple[Rule, ...] = (
     Rule("common.weights-format", "common", "adapter_model.bin cannot be read without torch; only config is checked",
          "https://huggingface.co/docs/peft/main/en/developer_guides/checkpoint", "PEFT 0.21.2 save format (observed by saving tiny test adapters)"),
+    Rule("common.truncated", "common", "adapter_model.safetensors must be at least as large as its header requires (8 + header length + last data_offsets end)",
+         "https://github.com/huggingface/safetensors#format", "safetensors format spec; safetensors 0.8.0 load_file rejects short files (run locally)"),
     Rule("common.pairing", "common", "every LoRA module needs matching A and B tensors of the same rank",
          "https://huggingface.co/docs/peft/main/en/conceptual_guides/lora", "PEFT 0.21.2 save format (observed by saving tiny test adapters)"),
     Rule("common.unmatched-target", "common", "a target_modules entry that matches no tensor was silently skipped in training",
@@ -147,6 +149,16 @@ def _common(summary: AdapterSummary, base: BaseSummary | None) -> list[Finding]:
             "Re-save as safetensors: model.save_pretrained(dir, safe_serialization=True)",
         ))
         return out
+    if summary.truncated is not None:
+        need, have = summary.truncated
+        out.append(_finding(
+            "common.truncated", "fail",
+            f"adapter_model.safetensors is truncated: the header requires {need} bytes but the file has {have}. "
+            "Every runtime fails to load it.",
+            "The copy or upload was cut off; re-save the adapter or copy/download it again.",
+        ))
+    else:
+        out.append(_finding("common.truncated", "pass", "file size matches what the header requires"))
     bad = [f"{m} (A and B ranks differ)" for m in summary.rank_mismatch]
     bad += [f"{m} (only one of lora_A / lora_B present)" for m in summary.unpaired]
     if bad:
