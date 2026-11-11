@@ -1,5 +1,7 @@
 # lora-preflight
 
+**한국어** | [English](README.en.md)
+
 > **English summary** — `lora-preflight` reads a PEFT LoRA adapter's `adapter_config.json` and its safetensors header (never the weights) and predicts, per runtime, whether vLLM, llama.cpp and Ollama will accept it, with a copy-paste fix for each problem. It needs no GPU and no server, and has zero runtime dependencies. Try it: `uvx --from git+https://github.com/LeeGyeongPil/lora-preflight lora-preflight demo` (runs on synthetic practice adapters).
 
 LoRA 로 파인튜닝한 어댑터를 서버에 올렸다가 `LoRA rank 128 is greater than max_lora_rank 16` 같은 오류를 **서버를 띄운 뒤에야** 만나는 귀찮음을 없애 줍니다. 어댑터 폴더를 가리키면 몇 초 안에 vLLM·llama.cpp·Ollama 별 통과/실패와 고칠 명령을 알려 줍니다.
