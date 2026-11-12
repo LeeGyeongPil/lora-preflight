@@ -62,10 +62,26 @@ lora-preflight ./out --base ./base-model
 | `--max-lora-rank N` | The `--max-lora-rank` value to give vLLM (default 16) | `--max-lora-rank 64` |
 | `--json` | Output as JSON | `--json` |
 | `--strict` | Treat WARN as exit code 1 too | `--strict` |
+| `--lang en\|ko` | Language of the screen text (see "Display language") | `--lang ko` |
 | `lora-preflight demo [--keep DIR]` | Checks 7 synthetic practice adapters; `--keep` keeps the files | `demo --keep ./demo` |
 | `lora-preflight rules` | Shows all rules with their sources and check dates | `rules --json` |
 
 Exit codes: `0` no FAIL, `1` FAIL (or WARN under `--strict`), `2` input error (nonexistent folder, etc.).
+
+### Display language
+Help, reports, the `demo` and `rules` screens and error messages come in English and Korean. The language is chosen in this order, and the first one that is set wins:
+
+1. `--lang en|ko` (works with `check`, `demo`, `rules`, `--help` and `--version`)
+2. the `LORA_PREFLIGHT_LANG` environment variable
+3. `LC_ALL`, then `LC_MESSAGES`, then `LANG`
+
+A value starting with `ko` (for example `ko_KR.UTF-8`) gives Korean; anything else, including unset, `C` and `POSIX`, gives English. An invalid `--lang` value is an input error (exit code 2).
+```bash
+lora-preflight demo --lang ko
+LORA_PREFLIGHT_LANG=ko lora-preflight rules
+LANG=ko_KR.UTF-8 lora-preflight rules
+```
+Only the human-readable text changes. `--json` output, rule IDs, exit codes and the Python API stay the same in both languages (JSON messages stay English), and commands you copy (`vllm serve …`) are never translated. If a script compares the text output, pass `--lang en` so a Korean `LANG` does not change it.
 
 The scenarios below were run after creating the practice files with `lora-preflight demo --keep ./demo`.
 
@@ -76,12 +92,11 @@ lora-preflight ./demo/r128_all --target vllm --max-lora-rank 128
 ```
 ![The r128 adapter is FAIL on vLLM, then becomes PASS when given --max-lora-rank 128](docs/images/02-rank-fail-then-pass.png)
 *The first run shows FAIL and the `vllm serve …` command to fix it; the second run applies that value and shows PASS.*
-*This screenshot was taken with v0.1.0, so the number of passed rules appears 1 lower because of the `common.truncated` rule added in v0.1.1.*
 
 The key line of the first run is:
 ```
   [FAIL] vllm.rank: LoRA rank 128 is greater than max_lora_rank 16.
-      fix: vllm serve example/base-model --enable-lora --lora-modules adapter=... --max-lora-rank 128
+      fix: vllm serve example/base-model --enable-lora --lora-modules adapter=demo/r128_all --max-lora-rank 128
 ```
 vLLM's default `max_lora_rank` is 16, so an adapter with a larger rank only loads if you raise that value. Just paste the `fix:` line. Give `--max-lora-rank 128` and check again, and you get `vllm PASS` (exit code 0).
 
@@ -125,18 +140,30 @@ for f in report.findings:
 ### 4. Checking a hub adapter without downloading it
 ```bash
 lora-preflight hf:smangrul/tinyllama_lora_norobots \
-  --base hf:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T --target vllm
+  --base hf:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T --target vllm --lang en
 ```
 Give `hf:<owner>/<repo>[@revision]` and it reads only the front part (the header) of the safetensors file with HTTP `Range` requests. Even a base of several GB downloads just a few tens of KB of header. The base of a hub adapter is not fetched automatically, so if you need checks such as vocabulary size you must pass `--base hf:…` yourself. The truncation check (`common.truncated`) uses the total length in the `Content-Range` of the first `Range` response, and is skipped if the total length cannot be known (no extra request).
 
-This is the key output from running the command above against the real hub on 2026-11-10 (hub contents may change). In this example the vocabulary sizes differ (adapter 32005, base 32000), so vLLM comes out `FAIL` and the exit code is 1.
+This is the output of running the command above against the real hub on 2026-11-12 (hub contents may change). In this example the vocabulary sizes differ (adapter 32005, base 32000), so vLLM comes out `FAIL` and the exit code is 1.
 ```text
+lora-preflight 0.2.0
+adapter: hf:smangrul/tinyllama_lora_norobots@main
+base:    hf:TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T@main
+config:  r=8 alpha=16
+ranks:   r=8 x156  (config says r=8, rank_pattern={})
+scale:   2
+modules: 156 (down_proj x22, embed_tokens x1, gate_proj x22, k_proj x22, lm_head x1, o_proj x22, q_proj x22, up_proj x22, v_proj x22); layers 22 of 22 (0-21)
+
 verdicts
   vllm      FAIL
 
 findings (2 to look at, 12 rule(s) passed)
   [FAIL] vllm.embedding-vocab: embedding LoRA size(32005) must be consistent with the base model's vocabulary size(32000) (model.embed_tokens)
+      fix: The adapter was saved after the vocabulary grew (new tokens). Serve a base resized to the same vocabulary (save the resized base after training), or merge the adapter into that resized base.
   [FAIL] vllm.shape: lm_head: B gives 32005 outputs, base has 32000
+      fix: This is probably not the base the adapter was trained on; pass the right --base.
+
+These verdicts are rule-based predictions from files only; no runtime was started. Rule sources and check dates: `lora-preflight rules`.
 ```
 The unit tests, which run without a network (`tests/test_hub.py`), verify the same path with fake responses.
 
@@ -171,7 +198,6 @@ lora-preflight rules | head -24
 ```
 ![Rule list: rule ID, source URL, reference version and check date](docs/images/05-rules.png)
 
-(This image is as of v0.1.0, so it lacks the `common.truncated` rule added in v0.1.1. Check the latest list with `lora-preflight rules`.)
 *Each rule carries a source and a check date, so you can trace where a verdict came from.*
 
 - **vLLM**: whether the maximum rank is at or below `--max-lora-rank` (default 16), whether DoRA, `bias`, `lora_bias`, special initialization (PiSSA, etc.) and `modules_to_save` (other than classification heads) are unused, and whether the embedding LoRA vocabulary size equals the base's.
