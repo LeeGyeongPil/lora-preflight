@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lora-preflight"
-version = "0.1.1"
+version = "0.2.0"
 description = "Check a PEFT LoRA adapter against vLLM, llama.cpp and Ollama before you serve it. No GPU, no weight download."
 readme = "README.md"
 license = { text = "MIT" }

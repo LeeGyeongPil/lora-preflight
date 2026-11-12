@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-11-12
+
+### Added
+- English and Korean screens. The text report, `demo` and `rules` output, `--help`, usage and error messages (including argparse's own and errors raised from the library) can be shown in Korean. The language is chosen by `--lang en|ko`, then the `LORA_PREFLIGHT_LANG` environment variable, then `LC_ALL`, `LC_MESSAGES` and `LANG`; anything that does not start with `ko` is English. An invalid `--lang` value exits with code 2.
+- All user-facing text lives in one message table (`lora_preflight/i18n.py`); tests check that both languages have the same keys and placeholders.
+- `PreflightError` accepts optional `code` and `params` (existing `PreflightError("message")` calls keep working; `str(exc)` stays English). `Finding` carries non-serialized message keys so the text report can be rendered in the chosen language.
+
+### Notes
+- `--json` and `rules --json` output, rule IDs, status words (PASS/WARN/FAIL/UNKNOWN), exit codes and the public library API are unchanged; JSON is always English.
+- Scripts that match words in the human-readable text output may see Korean when `LANG` starts with `ko`; pass `--lang en` or `LORA_PREFLIGHT_LANG=en` to keep English, or use `--json`.
+
 ## [0.1.1] - 2026-11-11
 
 ### Fixed
