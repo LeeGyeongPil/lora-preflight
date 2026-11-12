@@ -7,7 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from lora_preflight import synth
+from lora_preflight import i18n, synth
+
+
+@pytest.fixture(autouse=True)
+def english_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the screen language to English so tests pass whatever LANG the machine has."""
+    for name in ("LORA_PREFLIGHT_LANG", "LC_ALL", "LC_MESSAGES"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LANG", "C")
+    i18n.set_lang("en")
 
 
 @pytest.fixture(autouse=True)

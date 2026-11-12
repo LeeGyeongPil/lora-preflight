@@ -26,13 +26,11 @@ def normalize_targets(targets: Iterable[str] | str) -> tuple[str, ...]:
         if name == "all":
             return KNOWN_TARGETS
         if name not in KNOWN_TARGETS:
-            raise PreflightError(
-                f"unknown target '{raw}'. Choose from: {', '.join(KNOWN_TARGETS)}, or 'all'."
-            )
+            raise PreflightError.coded("err.target_unknown", raw=raw, known=", ".join(KNOWN_TARGETS))
         if name not in names:
             names.append(name)
     if not names:
-        raise PreflightError(f"no target given. Choose from: {', '.join(KNOWN_TARGETS)}, or 'all'.")
+        raise PreflightError.coded("err.target_none", known=", ".join(KNOWN_TARGETS))
     return tuple(t for t in KNOWN_TARGETS if t in names)
 
 
@@ -54,9 +52,8 @@ def check(
     """
     chosen = normalize_targets(targets)
     if max_lora_rank not in VLLM_MAX_LORA_RANKS:
-        raise PreflightError(
-            f"max_lora_rank {max_lora_rank} is not a value vLLM accepts. "
-            f"Use one of: {', '.join(map(str, VLLM_MAX_LORA_RANKS))}."
+        raise PreflightError.coded(
+            "err.max_rank", rank=max_lora_rank, allowed=", ".join(map(str, VLLM_MAX_LORA_RANKS))
         )
     source = parse_location(adapter, opener=opener)
     summary = load_adapter(source)

@@ -13,6 +13,7 @@ from typing import Any
 from . import fixes
 from .adapter import AdapterSummary
 from .base import BaseSummary
+from .i18n import J, M, tr
 from .report import Finding
 
 VLLM_MAX_LORA_RANKS = (1, 8, 16, 32, 64, 128, 256, 320, 512)
@@ -94,16 +95,42 @@ _RULE_BY_ID = {r.id: r for r in RULES}
 KNOWN_TARGETS = ("vllm", "llamacpp", "ollama")
 
 
-def _finding(rule_id: str, status: str, message: str, fix: str = "") -> Finding:
+def _finding(
+    rule_id: str,
+    status: str,
+    key: str,
+    params: dict[str, Any] | None = None,
+    fix_key: str = "",
+    fix_params: dict[str, Any] | None = None,
+    fix_raw: str = "",
+) -> Finding:
+    """Build a finding. The English text is made from the message table; the keys travel along for the text report."""
     rule = _RULE_BY_ID[rule_id]
-    return Finding(rule_id, rule.target, status, message, fix, f"{rule.source_url} ({rule.source_ref}, checked {rule.checked})")
+    params = params or {}
+    fix_params = fix_params or {}
+    message = tr("en", key, **params)
+    fix = tr("en", fix_key, **fix_params) if fix_key else fix_raw
+    return Finding(
+        rule_id, rule.target, status, message, fix, f"{rule.source_url} ({rule.source_ref}, checked {rule.checked})",
+        key=key, params=params, fix_key=fix_key, fix_params=fix_params,
+    )
 
 
 # --------------------------------------------------------------------------- base comparison
 @dataclass
 class ShapeProblem:
     kind: str  # "vocab", "linear" or "full"
-    text: str
+    key: str  # message-table key
+    params: dict[str, Any]
+
+    @property
+    def text(self) -> str:
+        """The problem in English."""
+        return tr("en", self.key, **self.params)
+
+    def message(self) -> M:
+        """The problem as a nested message, shown in the current language."""
+        return M(self.key, **self.params)
 
 
 def shape_problems(summary: AdapterSummary, base: BaseSummary) -> tuple[list[ShapeProblem], list[str]]:
@@ -119,73 +146,55 @@ def shape_problems(summary: AdapterSummary, base: BaseSummary) -> tuple[list[Sha
             continue
         if info.kind == "embedding":
             if info.a_shape[1] != base_shape[0]:
-                problems.append(ShapeProblem(
-                    "vocab",
-                    f"embedding LoRA size({info.a_shape[1]}) must be consistent with the base model's "
-                    f"vocabulary size({base_shape[0]}) ({name})",
-                ))
+                problems.append(ShapeProblem("vocab", "sp.vocab", {"a": info.a_shape[1], "b": base_shape[0], "name": name}))
             if info.b_shape[0] != base_shape[1]:
-                problems.append(ShapeProblem("linear", f"{name}: B has {info.b_shape[0]} rows, base embedding dim is {base_shape[1]}"))
+                problems.append(ShapeProblem("linear", "sp.emb_dim", {"name": name, "rows": info.b_shape[0], "dim": base_shape[1]}))
         else:
             if info.a_shape[1] != base_shape[1]:
-                problems.append(ShapeProblem("linear", f"{name}: A expects {info.a_shape[1]} inputs, base has {base_shape[1]}"))
+                problems.append(ShapeProblem("linear", "sp.lin_in", {"name": name, "a": info.a_shape[1], "b": base_shape[1]}))
             if info.b_shape[0] != base_shape[0]:
-                problems.append(ShapeProblem("linear", f"{name}: B gives {info.b_shape[0]} outputs, base has {base_shape[0]}"))
+                problems.append(ShapeProblem("linear", "sp.lin_out", {"name": name, "a": info.b_shape[0], "b": base_shape[0]}))
     for name in summary.full_tensors:
         base_shape = base.shapes.get(name)
         shape = summary.tensors[name][1]
         if base_shape is not None and tuple(base_shape) != tuple(shape):
-            problems.append(ShapeProblem("full", f"{name}: adapter shape {list(shape)} != base shape {list(base_shape)}"))
+            problems.append(ShapeProblem("full", "sp.full", {"name": name, "a": str(list(shape)), "b": str(list(base_shape))}))
     return problems, missing
+
+
+def _joined(problems: list[ShapeProblem]) -> J:
+    return J("; ", [p.message() for p in problems[:3]])
 
 
 # --------------------------------------------------------------------------- common
 def _common(summary: AdapterSummary, base: BaseSummary | None) -> list[Finding]:
     out: list[Finding] = []
     if summary.weights_format == "bin":
-        out.append(_finding(
-            "common.weights-format", "unknown",
-            "adapter_model.bin is a pickle file; tensors cannot be read safely without torch, so only adapter_config.json was checked.",
-            "Re-save as safetensors: model.save_pretrained(dir, safe_serialization=True)",
-        ))
+        out.append(_finding("common.weights-format", "unknown", "msg.bin_pickle", fix_key="fix.resave"))
         return out
     if summary.truncated is not None:
         need, have = summary.truncated
-        out.append(_finding(
-            "common.truncated", "fail",
-            f"adapter_model.safetensors is truncated: the header requires {need} bytes but the file has {have}. "
-            "Every runtime fails to load it.",
-            "The copy or upload was cut off; re-save the adapter or copy/download it again.",
-        ))
+        out.append(_finding("common.truncated", "fail", "msg.truncated", {"need": need, "have": have}, "fix.truncated"))
     else:
-        out.append(_finding("common.truncated", "pass", "file size matches what the header requires"))
-    bad = [f"{m} (A and B ranks differ)" for m in summary.rank_mismatch]
-    bad += [f"{m} (only one of lora_A / lora_B present)" for m in summary.unpaired]
+        out.append(_finding("common.truncated", "pass", "msg.truncated_ok"))
+    bad: list[M] = [M("pair.rank", name=m) for m in summary.rank_mismatch]
+    bad += [M("pair.single", name=m) for m in summary.unpaired]
     if bad:
-        out.append(_finding("common.pairing", "fail", "broken LoRA pairs: " + "; ".join(bad[:5]),
-                            "The file is incomplete or corrupt; re-run save_pretrained or copy the adapter again."))
+        out.append(_finding("common.pairing", "fail", "msg.pairing_bad", {"detail": J("; ", bad[:5])}, "fix.pairing"))
     else:
-        out.append(_finding("common.pairing", "pass", f"{len(summary.modules)} module(s) have matching A/B tensors"))
+        out.append(_finding("common.pairing", "pass", "msg.pairing_ok", {"n": len(summary.modules)}))
     if summary.unmatched_targets:
-        out.append(_finding(
-            "common.unmatched-target", "warn",
-            "target_modules entries with no tensor in the file: " + ", ".join(summary.unmatched_targets)
-            + ". PEFT skips a target the model does not have without an error, so those layers were never trained.",
-            "Check the module names with `print(model)` before training and fix target_modules.",
-        ))
+        out.append(_finding("common.unmatched-target", "warn", "msg.unmatched",
+                            {"names": ", ".join(summary.unmatched_targets)}, "fix.unmatched"))
     else:
-        out.append(_finding("common.unmatched-target", "pass", "every target_modules entry has tensors"))
+        out.append(_finding("common.unmatched-target", "pass", "msg.unmatched_ok"))
     if base is not None:
         _, missing = shape_problems(summary, base)
         if missing:
-            out.append(_finding(
-                "common.base-module-missing", "warn",
-                f"{len(missing)} adapter module(s) not found in the base, e.g. {missing[0]}. "
-                "Is this the base model the adapter was trained on?",
-                "Pass the matching base with --base <folder|hf:repo>.",
-            ))
+            out.append(_finding("common.base-module-missing", "warn", "msg.base_missing",
+                                {"n": len(missing), "example": missing[0]}, "fix.base_missing"))
         else:
-            out.append(_finding("common.base-module-missing", "pass", "all adapter modules exist in the base"))
+            out.append(_finding("common.base-module-missing", "pass", "msg.base_missing_ok"))
     return out
 
 
@@ -202,48 +211,38 @@ def _vllm(summary: AdapterSummary, base: BaseSummary | None, max_lora_rank: int)
     candidates = [v for v in (summary.config_max_rank, summary.max_rank) if v is not None]
     rank = max(candidates) if candidates else None
     if rank is None:
-        out.append(_finding("vllm.rank", "unknown", "no rank found in the config or tensors"))
+        out.append(_finding("vllm.rank", "unknown", "msg.rank_unknown"))
     elif rank > max_lora_rank:
         need = _next_allowed(rank)
         if need is None:
             out.append(_finding(
-                "vllm.rank", "fail",
-                f"LoRA rank {rank} is greater than max_lora_rank {max_lora_rank}, and {rank} is above the largest allowed value (512; allowed: "
-                + ", ".join(map(str, VLLM_MAX_LORA_RANKS)) + ").",
-                "No --max-lora-rank value fits. Retrain with r <= 512, or merge the adapter into the base model and serve the merged model.",
+                "vllm.rank", "fail", "msg.rank_too_big",
+                {"rank": rank, "max": max_lora_rank, "allowed": ", ".join(map(str, VLLM_MAX_LORA_RANKS))},
+                "fix.rank_too_big",
             ))
         else:
-            out.append(_finding(
-                "vllm.rank", "fail",
-                f"LoRA rank {rank} is greater than max_lora_rank {max_lora_rank}.",
-                fixes.vllm_serve(summary, need),
-            ))
+            out.append(_finding("vllm.rank", "fail", "msg.rank_over", {"rank": rank, "max": max_lora_rank},
+                                fix_raw=fixes.vllm_serve(summary, need)))
     else:
-        out.append(_finding("vllm.rank", "pass", f"max rank {rank} <= max_lora_rank {max_lora_rank}"))
+        out.append(_finding("vllm.rank", "pass", "msg.rank_ok", {"rank": rank, "max": max_lora_rank}))
 
     # DoRA
     if cfg.get("use_dora") or summary.magnitude_tensors:
-        out.append(_finding("vllm.dora", "fail", "vLLM does not yet support DoRA.",
-                            "Merge the adapter into the base model (merge_and_unload) and serve the merged model."))
+        out.append(_finding("vllm.dora", "fail", "msg.dora", fix_key="fix.merge_unload"))
     else:
-        out.append(_finding("vllm.dora", "pass", "no DoRA"))
+        out.append(_finding("vllm.dora", "pass", "msg.dora_ok"))
 
     # bias
     bias = cfg.get("bias", "none")
     if bias != "none":
-        if summary.bias_tensors:
-            fix = "Retrain with bias='none', or merge the adapter into the base model and serve the merged model."
-        else:
-            fix = ("The file has no bias tensors, so only the config is wrong: set \"bias\": \"none\" in "
-                   "adapter_config.json (a copy is safest) and the adapter loads.")
-        out.append(_finding("vllm.bias", "fail", f"Adapter bias is not supported (bias={bias!r}).", fix))
+        fix_key = "fix.bias_retrain" if summary.bias_tensors else "fix.bias_config"
+        out.append(_finding("vllm.bias", "fail", "msg.bias", {"bias": repr(bias)}, fix_key))
     else:
-        out.append(_finding("vllm.bias", "pass", "bias is 'none'"))
+        out.append(_finding("vllm.bias", "pass", "msg.bias_ok"))
     if cfg.get("lora_bias"):
-        out.append(_finding("vllm.lora-bias", "fail", "vLLM does not support LoRA bias (lora_bias).",
-                            "Retrain with lora_bias=False, or merge the adapter and serve the merged model."))
+        out.append(_finding("vllm.lora-bias", "fail", "msg.lora_bias", fix_key="fix.lora_bias"))
     else:
-        out.append(_finding("vllm.lora-bias", "pass", "lora_bias is off"))
+        out.append(_finding("vllm.lora-bias", "pass", "msg.lora_bias_ok"))
 
     # modules_to_save / whole-module tensors
     allowed = ("classifier", "score")
@@ -253,26 +252,16 @@ def _vllm(summary: AdapterSummary, base: BaseSummary | None, max_lora_rank: int)
         if module.rsplit(".", 1)[-1] not in allowed and module not in unsupported:
             unsupported.append(module)
     if unsupported:
-        out.append(_finding(
-            "vllm.modules-to-save", "fail",
-            f"vLLM only supports modules_to_save being either None or [\"classifier\", \"score\"]. Unsupported: {unsupported}",
-            "Drop the extra modules (you lose the changed embedding/head weights, e.g. new tokens), "
-            "or merge the adapter into the base model and serve the merged model.",
-        ))
+        out.append(_finding("vllm.modules-to-save", "fail", "msg.mts", {"names": str(unsupported)}, "fix.mts"))
     else:
-        out.append(_finding("vllm.modules-to-save", "pass", "no unsupported modules_to_save"))
+        out.append(_finding("vllm.modules-to-save", "pass", "msg.mts_ok"))
 
     # init_lora_weights
     init = cfg.get("init_lora_weights")
     if isinstance(init, str) and init.lower() not in _VLLM_OK_INITS:
-        out.append(_finding(
-            "vllm.init-weights", "fail",
-            f"vLLM does not support init_lora_weights={init!r}. Inits such as PiSSA, OLoRA, CorDA and LoftQ modify the base model weights.",
-            "Convert to a regular LoRA adapter with PEFT's path_initial_model_for_weight_conversion, "
-            "or set init_lora_weights to true if the served base already contains the modified weights.",
-        ))
+        out.append(_finding("vllm.init-weights", "fail", "msg.init", {"init": repr(init)}, "fix.init"))
     else:
-        out.append(_finding("vllm.init-weights", "pass", "init_lora_weights is supported"))
+        out.append(_finding("vllm.init-weights", "pass", "msg.init_ok"))
 
     variants = []
     if cfg.get("alora_invocation_tokens"):
@@ -284,53 +273,37 @@ def _vllm(summary: AdapterSummary, base: BaseSummary | None, max_lora_rank: int)
     if cfg.get("use_qalora"):
         variants.append("QALoRA")
     if variants:
-        out.append(_finding("vllm.variants", "fail", "vLLM does not support: " + ", ".join(variants) + ".",
-                            "Merge the adapter into the base model and serve the merged model."))
+        out.append(_finding("vllm.variants", "fail", "msg.variants", {"names": ", ".join(variants)}, "fix.merge_serve"))
     else:
-        out.append(_finding("vllm.variants", "pass", "no unsupported adapter variant"))
+        out.append(_finding("vllm.variants", "pass", "msg.variants_ok"))
 
     # base-dependent checks
-    vocab_fail = None
     problems: list[ShapeProblem] = []
     if base is not None:
         problems, _ = shape_problems(summary, base)
     embed_modules = [m for m in summary.modules.values() if m.kind == "embedding"]
     if base is None and embed_modules:
-        out.append(_finding("vllm.embedding-vocab", "unknown",
-                            "the adapter has embedding LoRA tensors, but no base was given to compare vocabulary sizes.",
-                            "Re-run with --base <folder|hf:repo>."))
+        out.append(_finding("vllm.embedding-vocab", "unknown", "msg.embed_unknown", fix_key="fix.rerun_base"))
     else:
-        vocab_fail = [p for p in problems if p.kind == "vocab"]
-        full_vocab = [p for p in problems if p.kind == "full"]
-        both = vocab_fail + full_vocab
+        both = [p for p in problems if p.kind in ("vocab", "full")]
         if both:
-            out.append(_finding(
-                "vllm.embedding-vocab", "fail", "; ".join(p.text for p in both[:3]),
-                "The adapter was saved after the vocabulary grew (new tokens). Serve a base resized to the same vocabulary "
-                "(save the resized base after training), or merge the adapter into that resized base.",
-            ))
+            out.append(_finding("vllm.embedding-vocab", "fail", "msg.joined", {"detail": _joined(both)}, "fix.vocab"))
         else:
-            out.append(_finding("vllm.embedding-vocab", "pass", "no vocabulary size conflict"))
+            out.append(_finding("vllm.embedding-vocab", "pass", "msg.vocab_ok"))
     if base is not None:
         linear = [p for p in problems if p.kind == "linear"]
         if linear:
-            out.append(_finding("vllm.shape", "fail", "; ".join(p.text for p in linear[:3]),
-                                "This is probably not the base the adapter was trained on; pass the right --base."))
+            out.append(_finding("vllm.shape", "fail", "msg.joined", {"detail": _joined(linear)}, "fix.shape"))
         else:
-            out.append(_finding("vllm.shape", "pass", "A/B shapes fit the base"))
+            out.append(_finding("vllm.shape", "pass", "msg.shape_ok"))
 
     # module names vLLM may not know
     unknown_modules = sorted({n.rsplit(".", 1)[-1] for n in summary.modules} - _VLLM_KNOWN_MODULES)
     if unknown_modules:
-        out.append(_finding(
-            "vllm.unknown-module", "warn",
-            "module names outside the Llama/Mistral/Qwen/Gemma table: " + ", ".join(unknown_modules)
-            + ". vLLM accepts only the modules the served model class lists; this could not be confirmed.",
-            "Try loading it once with vLLM; if it fails with 'Please verify that the loaded LoRA module is correct', "
-            "retrain with target_modules limited to modules the model supports.",
-        ))
+        out.append(_finding("vllm.unknown-module", "warn", "msg.unknown_module",
+                            {"names": ", ".join(unknown_modules)}, "fix.unknown_module"))
     else:
-        out.append(_finding("vllm.unknown-module", "pass", "all module names are in the known table"))
+        out.append(_finding("vllm.unknown-module", "pass", "msg.unknown_module_ok"))
     return out
 
 
@@ -342,57 +315,39 @@ def _is_norm(name: str) -> bool:
 def _llamacpp(summary: AdapterSummary, base: BaseSummary | None) -> list[Finding]:
     out: list[Finding] = []
     if summary.weights_format == "bin":
-        out.append(_finding("llamacpp.unexpected-tensor", "unknown",
-                            "tensors were not read (adapter_model.bin), so the converter outcome cannot be predicted.",
-                            "Re-save as safetensors: model.save_pretrained(dir, safe_serialization=True)"))
+        out.append(_finding("llamacpp.unexpected-tensor", "unknown", "msg.llama_unread", fix_key="fix.resave"))
         return out
     if summary.magnitude_tensors:
-        out.append(_finding(
-            "llamacpp.dora", "fail",
-            f"Unexpected name '{summary.magnitude_tensors[0]}': Not a lora_A or lora_B tensor (DoRA magnitude vectors).",
-            "Merge the adapter into the base model (merge_and_unload), then convert the merged model to GGUF.",
-        ))
+        out.append(_finding("llamacpp.dora", "fail", "msg.llama_dora", {"name": summary.magnitude_tensors[0]},
+                            "fix.merge_convert"))
     else:
-        out.append(_finding("llamacpp.dora", "pass", "no DoRA magnitude tensors"))
+        out.append(_finding("llamacpp.dora", "pass", "msg.llama_dora_ok"))
     unexpected = [n for n in summary.full_tensors + summary.bias_tensors if not _is_norm(n)]
     if unexpected:
         shown = ", ".join(f"'{n}'" for n in unexpected[:3])
-        out.append(_finding(
-            "llamacpp.unexpected-tensor", "fail",
-            f"Unexpected name {shown}: Not a lora_A or lora_B tensor.",
-            "Remove whole-module tensors (modules_to_save such as embed_tokens / lm_head, bias) before converting, "
-            "or merge the adapter into the base model and convert the merged model.",
-        ))
+        out.append(_finding("llamacpp.unexpected-tensor", "fail", "msg.llama_unexpected", {"names": shown},
+                            "fix.llama_unexpected"))
     else:
-        out.append(_finding("llamacpp.unexpected-tensor", "pass", "only lora_A / lora_B tensors"))
+        out.append(_finding("llamacpp.unexpected-tensor", "pass", "msg.llama_unexpected_ok"))
     if base is None:
-        out.append(_finding("llamacpp.shape", "unknown",
-                            "no base model to compare shapes with; a wrong base fails at load time.",
-                            "Re-run with --base <folder|hf:repo>."))
+        out.append(_finding("llamacpp.shape", "unknown", "msg.llama_shape_unknown", fix_key="fix.rerun_base"))
     else:
         problems, _ = shape_problems(summary, base)
         problems = [p for p in problems if p.kind != "full"]
         if problems:
-            out.append(_finding(
-                "llamacpp.shape", "fail",
-                "tensor has incorrect shape (hint: maybe wrong base model?): " + "; ".join(p.text for p in problems[:3]),
-                "Convert and serve with the exact base the adapter was trained on (vocabulary included).",
-            ))
+            out.append(_finding("llamacpp.shape", "fail", "msg.llama_shape", {"detail": _joined(problems)},
+                                "fix.llama_shape"))
         else:
-            out.append(_finding("llamacpp.shape", "pass", "adapter shapes fit the base"))
+            out.append(_finding("llamacpp.shape", "pass", "msg.llama_shape_ok"))
     if not any(f.status == "fail" for f in out):
-        out.append(_finding("llamacpp.howto", "pass", "convert to GGUF, then serve with --lora.", fixes.llamacpp_convert(summary)))
+        out.append(_finding("llamacpp.howto", "pass", "msg.llama_howto", fix_raw=fixes.llamacpp_convert(summary)))
     return out
 
 
 # --------------------------------------------------------------------------- Ollama
 def _ollama(summary: AdapterSummary) -> list[Finding]:
-    return [_finding(
-        "ollama.adapter-unsupported", "warn",
-        "A Modelfile ADAPTER line failed with 'Error: LoRA adapters are no longer supported' on Ollama 0.40.15 "
-        "(checked 2026-11-10; the version where this started is unknown, and other versions may differ).",
-        fixes.merge_hint(summary),
-    )]
+    return [_finding("ollama.adapter-unsupported", "warn", "msg.ollama",
+                     fix_key="fix.merge_hint", fix_params={"cmd": fixes.merge_for_ollama(summary)})]
 
 
 # --------------------------------------------------------------------------- entry point

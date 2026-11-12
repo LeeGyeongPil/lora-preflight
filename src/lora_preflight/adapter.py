@@ -248,21 +248,17 @@ def load_adapter(source: Source) -> AdapterSummary:
     try:
         config = json.loads(source.read_text(CONFIG_FILE))
     except NotFoundError as exc:
-        raise SourceError(
-            f"{source.describe()} has no {CONFIG_FILE}. Point lora-preflight at the folder "
-            "that `model.save_pretrained(...)` wrote."
-        ) from exc
+        raise SourceError.coded("err.no_config", where=source.describe(), file=CONFIG_FILE) from exc
     except json.JSONDecodeError as exc:
-        raise AdapterFormatError(
-            f"{source.describe()}/{CONFIG_FILE} is not valid JSON ({exc}). Re-save the adapter."
+        raise AdapterFormatError.coded(
+            "err.config_json", path=f"{source.describe()}/{CONFIG_FILE}", exc=str(exc)
         ) from exc
     if not isinstance(config, dict):
-        raise AdapterFormatError(f"{source.describe()}/{CONFIG_FILE} must be a JSON object.")
+        raise AdapterFormatError.coded("err.config_obj", path=f"{source.describe()}/{CONFIG_FILE}")
     peft_type = config.get("peft_type")
     if peft_type is not None and str(peft_type).upper() != "LORA":
-        raise AdapterFormatError(
-            f"{source.describe()}/{CONFIG_FILE} has peft_type={peft_type!r}; "
-            "lora-preflight only checks LORA adapters."
+        raise AdapterFormatError.coded(
+            "err.peft_type", path=f"{source.describe()}/{CONFIG_FILE}", peft_type=repr(peft_type)
         )
 
     try:
@@ -270,9 +266,8 @@ def load_adapter(source: Source) -> AdapterSummary:
     except NotFoundError:
         has_bin = source.exists(BIN_FILE)
         if not has_bin:
-            raise SourceError(
-                f"{source.describe()} has neither {SAFETENSORS_FILE} nor {BIN_FILE}. "
-                "Point lora-preflight at the folder that holds the adapter weights."
+            raise SourceError.coded(
+                "err.no_weights", where=source.describe(), st=SAFETENSORS_FILE, bin=BIN_FILE
             ) from None
         summary = AdapterSummary(source=source.describe(), config=config, weights_format="bin")
         return summary

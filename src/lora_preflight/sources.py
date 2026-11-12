@@ -42,10 +42,7 @@ class LocalSource:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         if not self.root.is_dir():
-            raise SourceError(
-                f"{self.root} is not a folder. Pass the folder that contains "
-                "adapter_config.json, or use hf:<owner>/<repo> for a Hub repo."
-            )
+            raise SourceError.coded("err.not_folder", root=str(self.root))
 
     def describe(self) -> str:
         return str(self.root)
@@ -53,7 +50,7 @@ class LocalSource:
     def _path(self, name: str) -> Path:
         path = self.root / name
         if not path.is_file():
-            raise NotFoundError(f"{path} does not exist.")
+            raise NotFoundError.coded("err.not_exist", path=str(path))
         return path
 
     def exists(self, name: str) -> bool:
@@ -83,11 +80,9 @@ class HubSource:
         opener: Any = None,
     ) -> None:
         if not _REPO_RE.match(repo):
-            raise SourceError(
-                f"'{repo}' is not a Hub repo id. Use hf:<owner>/<repo>, e.g. hf:TinyLlama/TinyLlama-1.1B-Chat-v1.0."
-            )
+            raise SourceError.coded("err.bad_repo", repo=repo)
         if not _REV_RE.match(revision):
-            raise SourceError(f"'{revision}' is not a valid revision name.")
+            raise SourceError.coded("err.bad_rev", revision=revision)
         self.repo = repo
         self.revision = revision
         self.token = token if token is not None else os.environ.get("HF_TOKEN")
@@ -130,18 +125,12 @@ class HubSource:
             response = self.opener.open(request, timeout=HTTP_TIMEOUT)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                raise NotFoundError(f"{self.describe()}: {name} not found (HTTP 404).") from exc
+                raise NotFoundError.coded("err.http404", where=self.describe(), name=name) from exc
             if exc.code in (401, 403):
-                raise SourceError(
-                    f"{self.describe()}: HTTP {exc.code} for {name}. The repo is private or gated; "
-                    "set the HF_TOKEN environment variable to a token that can read it."
-                ) from exc
-            raise SourceError(f"{self.describe()}: HTTP {exc.code} for {name}.") from exc
+                raise SourceError.coded("err.http_auth", where=self.describe(), code=exc.code, name=name) from exc
+            raise SourceError.coded("err.http", where=self.describe(), code=exc.code, name=name) from exc
         except (urllib.error.URLError, OSError) as exc:
-            raise SourceError(
-                f"{self.describe()}: network error while reading {name} ({exc}). "
-                "Check your connection, or point lora-preflight at a local folder."
-            ) from exc
+            raise SourceError.coded("err.network", where=self.describe(), name=name, exc=str(exc)) from exc
         try:
             status = getattr(response, "status", 200)
             if status == 206:

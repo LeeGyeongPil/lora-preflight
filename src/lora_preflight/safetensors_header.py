@@ -62,16 +62,10 @@ class Header:
 def parse_length(prefix: bytes, label: str) -> int:
     """Decode the 8-byte header length and check it is plausible."""
     if len(prefix) < 8:
-        raise AdapterFormatError(
-            f"{label}: file is shorter than 8 bytes, so it is not a safetensors file."
-        )
+        raise AdapterFormatError.coded("err.hdr_short", label=label)
     (length,) = struct.unpack("<Q", prefix[:8])
     if length > MAX_HEADER_BYTES:
-        raise AdapterFormatError(
-            f"{label}: header length {length} is larger than {MAX_HEADER_BYTES} bytes. "
-            "The file is truncated, corrupt, or not a safetensors file "
-            "(for example a pickle .bin or a Git LFS pointer)."
-        )
+        raise AdapterFormatError.coded("err.hdr_len", label=label, length=length, max=MAX_HEADER_BYTES)
     return length
 
 
@@ -80,16 +74,13 @@ def parse_header_json(
 ) -> Header:
     """Decode the JSON part of the header into a :class:`Header`."""
     if len(body) < length:
-        raise AdapterFormatError(
-            f"{label}: header says {length} bytes but only {len(body)} are available. "
-            "The file is truncated; copy or download it again."
-        )
+        raise AdapterFormatError.coded("err.hdr_trunc", label=label, length=length, have=len(body))
     try:
         raw = json.loads(body[:length].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AdapterFormatError(f"{label}: header is not valid JSON ({exc}).") from exc
+        raise AdapterFormatError.coded("err.hdr_json", label=label, exc=str(exc)) from exc
     if not isinstance(raw, dict):
-        raise AdapterFormatError(f"{label}: header JSON must be an object.")
+        raise AdapterFormatError.coded("err.hdr_obj", label=label)
     header = Header(required_size=8 + length, file_size=file_size)
     for name, entry in raw.items():
         if name == "__metadata__":
@@ -100,9 +91,7 @@ def parse_header_json(
             dtype = str(entry["dtype"])
             shape = tuple(int(x) for x in entry["shape"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise AdapterFormatError(
-                f"{label}: tensor {name!r} has no valid dtype/shape entry."
-            ) from exc
+            raise AdapterFormatError.coded("err.hdr_tensor", label=label, name=repr(name)) from exc
         header.tensors[name] = TensorInfo(name, dtype, shape)
         # data_offsets only feed the size check; a missing or odd entry is ignored here.
         offsets = entry.get("data_offsets") if isinstance(entry, dict) else None

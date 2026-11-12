@@ -55,23 +55,22 @@ def load_base(source: Source) -> BaseSummary:
         index = json.loads(source.read_text(INDEX_FILE))
         files = sorted({str(v) for v in index.get("weight_map", {}).values()})
         if not files:
-            raise SourceError(f"{source.describe()}/{INDEX_FILE} has an empty weight_map.")
+            raise SourceError.coded("err.base_empty", path=f"{source.describe()}/{INDEX_FILE}")
     except NotFoundError:
         files = [SINGLE_FILE]
     except json.JSONDecodeError as exc:
-        raise SourceError(f"{source.describe()}/{INDEX_FILE} is not valid JSON ({exc}).") from exc
+        raise SourceError.coded("err.base_json", path=f"{source.describe()}/{INDEX_FILE}", exc=str(exc)) from exc
     for name in files:
         try:
             header = source.read_header(name)
         except NotFoundError as exc:
-            raise SourceError(
-                f"{source.describe()} has no {name}. The base must be safetensors "
-                f"({SINGLE_FILE} or {INDEX_FILE} with shards)."
+            raise SourceError.coded(
+                "err.base_nofile", where=source.describe(), name=name, single=SINGLE_FILE, index=INDEX_FILE
             ) from exc
         if header.is_truncated:
-            raise SourceError(
-                f"Base file is truncated: {source.describe()}/{name} has {header.file_size} bytes but "
-                f"its header requires {header.required_size}. Copy or download the base model again."
+            raise SourceError.coded(
+                "err.base_truncated", path=f"{source.describe()}/{name}",
+                have=header.file_size, need=header.required_size,
             )
         for tensor_name, info in header.tensors.items():
             summary.shapes[tensor_name] = info.shape
